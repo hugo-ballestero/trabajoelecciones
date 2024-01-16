@@ -1,0 +1,1568 @@
+---
+title: "Análisis electorales"
+author: "Andrea Moncanut, Hugo Ballestero, Xiker Martín"
+format: 
+  revealjs:
+    theme: serif
+editor: visual
+execute: 
+  echo: true
+logo: logoComplu.png
+---
+
+### Paquetes necesarios
+
+```{r paquetes}
+
+rm(list = ls()) # Borramos variables de environment
+library(tidyverse)
+library(glue)
+library(lubridate)
+library(forcats)
+library(gganimate)
+
+```
+
+### Datos
+
+Recopilan datos de citas electorales al Congreso de los Diputados de España desde 2008 hasta 2019
+
+```{r}
+
+datos_elecciones <- read_csv(file = "./datos/datos_elecciones_brutos.csv")
+cod_mun <- read_csv(file = "./datos/cod_mun.csv")
+encuestas <- read_csv(file = "./datos/historical_surveys.csv")
+siglas <- read_csv(file = "./datos/siglas.csv")
+
+```
+
+# -- ORGANIZACIÓN -- -- DATA --
+
+## 1. ARREGLO DATA SIGLAS
+
+### 1.1. NORMALIZACIÓN
+
+```{r}
+#| code-fold: true
+
+caracteres_especiales <- unique(unlist(str_extract_all(siglas$siglas,"\\W"))) #para tener constancia de cuáles símbolos hay
+
+normalizar_siglas <- function(sigla) {
+  sigla_normalizada <- sigla
+  sigla_normalizada <- toupper(sigla_normalizada)  # Convertir a mayúsculas
+  sigla_normalizada <- gsub("\\.", "", sigla_normalizada)  # Eliminar puntos
+  sigla_normalizada <- gsub("-", "", sigla_normalizada) #Eliminar guiones
+  sigla_normalizada <- gsub("\\(", "", sigla_normalizada) # Elimina paréntesis abierto
+  sigla_normalizada <- gsub("\\)", "", sigla_normalizada) # Elimina paréntesis cerrado
+  sigla_normalizada <- gsub(" ", "", sigla_normalizada)  # Eliminar espacios
+  sigla_normalizada <- gsub(",", "", sigla_normalizada)  # Eliminar comas
+  sigla_normalizada <- gsub("'", "", sigla_normalizada)  # Eliminar '
+  sigla_normalizada <- gsub("´", "", sigla_normalizada)  # Eliminar ´
+  sigla_normalizada <- gsub(":", "", sigla_normalizada)  # Eliminar :
+  sigla_normalizada <- gsub("\\+", "", sigla_normalizada)  # Eliminar +
+  sigla_normalizada <- gsub("¡", "", sigla_normalizada)  # Eliminar ¡
+  sigla_normalizada <- gsub(" \ ", "", sigla_normalizada) # Eliminar \
+  sigla_normalizada <- gsub("/", "", sigla_normalizada)  # Eliminar /
+  sigla_normalizada <- gsub('"', "", sigla_normalizada)  # Eliminar "
+  return(sigla_normalizada)
+}
+
+# podemos comprobar
+respuesta <- c(normalizar_siglas('+PS,oE+'), normalizar_siglas("¡P/p"))
+respuesta
+
+```
+
+### 1.2 CAMBIOS
+
+```{r}
+#| code-fold: true
+
+siglas$siglas <- sapply(siglas$siglas, normalizar_siglas)  
+
+siglas <-  
+  siglas |>  
+  distinct(siglas, .keep_all = TRUE)
+
+```
+
+## 2. LIMPIAR ELECCIONES
+
+```{r}
+#| eval: false
+
+datos_elecciones |>    
+  summarise(across(everything(), n_distinct))
+
+```
+
+```{r}
+#| code-fold: true
+
+siglas <- add_row(siglas, denominacion="OTROS", siglas="OTROS")
+
+datos_limpios <- 
+  datos_elecciones |> 
+  mutate(across(where(is.logical), as.numeric)) |> 
+  select(-c(tipo_eleccion, vuelta, codigo_distrito_electoral)) |> 
+  pivot_longer(cols=c("BERDEAK-LOS VERDES":"COALICIÓN POR MELILLA"), 
+               names_to="partidos", values_to="votos", values_drop_na = TRUE) |>
+  mutate(siglas=case_when(
+    str_detect(partidos,"PARTIDO POPULAR|PARTIT POPULAR") ~ "PP", 
+    str_detect(partidos,"PSOE|(PARTIT|PARTIDO) (SOCIALISTA|SOCIALISTES)|(PARTIT|PARTIDO) (OBRERO|OBRER) (SOCIALISTA|SOCIALISTES)") ~ "PSOE", 
+    str_detect(partidos,"CIUDADANOS|CIUTADANS") ~ "CS", 
+    str_detect(partidos,"(NACIONALISTA&VASCO)|PARTIDO NACIONALISTA VASCO|EUZKO ALDERDI JELTZALEA") ~ "EAJPNV", 
+    str_detect(partidos,"(NACIONAL&GAL)|(BLOQUE NACIONALISTA GALEGO)") ~ "BNG", 
+    str_detect(partidos,"COMPROMÍS") ~ "MÉSCOMPROM", 
+    str_detect(partidos,"CONVERGENCIA I UNIO|CONVERGÈNCIA I UNIÓ|CONVERGÈNCIA i UNIÓ") ~ "CIU", 
+    str_detect(partidos,"PODEMOS|PODEM|VERDE|VERDES|VERDS|EZKER BATUA|MAREA|(UNIDAS|UNIDOS) (PODEM|PODEMOS)") ~ "PODEMOS", 
+    str_detect(partidos,"CATALUNYA SÍ|ESQUERRA REPUBLICANA DE CATALUNYA") ~ "ERC", 
+    str_detect(partidos,"EUSKAL HERRIA BILDU|ARALAR|SORTU|EUSKO ALKARTASUNA|ALTERNATIBA") ~ "EHBILDU", 
+    str_detect(partidos,"MÁS PAÍS") ~ "MPAÍS", 
+    str_detect(partidos,"VOX") ~ "VOX", 
+    TRUE ~ "OTROS")) |> 
+  left_join(siglas, by="siglas") |>  
+  mutate(cod_mun=glue("{codigo_ccaa}-{codigo_provincia}-{codigo_municipio}"), 
+         fecha=ymd(glue("{anno}-{mes}-1"))) |> 
+  group_by(fecha, cod_mun, siglas) |> 
+  mutate(votos=sum(votos)) |> 
+  distinct(fecha, cod_mun, siglas, .keep_all=TRUE) |> 
+  ungroup() |> 
+  select(-partidos) |> relocate(c(denominacion,siglas), .before=votos) |> 
+  relocate(cod_mun, .after=codigo_municipio) |> relocate(fecha, .after=mes)
+
+```
+
+## 3. LIMPIAR ENCUESTAS
+
+```{r}
+#| eval: false
+
+encuestas |> 
+  summarise(across(everything(), n_distinct))
+
+```
+
+```{r}
+#| code-fold: true
+
+encuestas_limpias <- 
+  encuestas |> 
+  filter(year(date_elec)>=2008) |> 
+  filter(exit_poll==FALSE) |> # a pies de urna
+  drop_na(size) |> 
+  filter(size>750) |> 
+  filter(field_date_to - field_date_from > 1) |> # menos de un día de trabajo
+  select(-c(type_survey,exit_poll)) |> 
+  pivot_longer(
+    cols=c("UCD":"EV"),
+    names_to="partidos",
+    values_to="estimacion_voto",
+    values_drop_na=TRUE) |> 
+  mutate(partidos= case_when(
+    str_detect(partidos,"PSOE" ) ~"PSOE",
+    str_detect(partidos, "PP") ~ "PP",
+    str_detect(partidos, "CS") ~ "CS",
+    str_detect(partidos, "PNV") ~ "EAJPNV",
+    str_detect(partidos, "BNG") ~ "BNG",
+    str_detect(partidos, "COMPROMIS") ~ "MÉSCOMPROM",
+    str_detect(partidos, "CIU") ~ "CIU",
+    str_detect(partidos, "UP|PODEMOS") ~ "PODEMOS",
+    str_detect(partidos, "ERC") ~ "ERC",
+    str_detect(partidos, "EH-BILDU") ~ "EHBILDU",
+    str_detect(partidos, "MP") ~ "MPAÍS",
+    str_detect(partidos, "VOX") ~ "VOX",
+    TRUE ~ "OTROS")) |> 
+  group_by(date_elec,id_pollster, field_date_from, field_date_to, size, partidos) |> 
+  mutate(est_voto_sigla=sum(estimacion_voto)) |> 
+  select(-estimacion_voto) |> 
+  distinct(partidos, .keep_all=TRUE) |> 
+  ungroup()
+
+```
+
+## TEMA PARA LOS GRÁFICOS
+
+```{r}
+library(showtext)
+library(sysfonts)
+library(peRReo)
+```
+
+```{r}
+
+# Descargar la fue  nte de google, p.e:
+font_add_google(name = "Montserrat")
+
+#Utilizar la fuente
+showtext.auto()
+
+#tema
+theme_set(theme_minimal(base_family = "Montserrat"))
+theme_update(
+  plot.background = element_rect(color = "#EEC591",
+                                 size = 4, fill = "seashell1"),
+  plot.title = element_text(face = "bold", size = 25),
+  plot.subtitle = element_text(face = "bold", size = 15),
+  axis.title.x = element_text(face = "bold"),
+  axis.text.x = element_text(face = "bold"), 
+  axis.title.y = element_text(face = "bold"),
+  axis.text.y = element_text(face = "bold"), 
+  panel.grid.minor = element_blank(),
+  strip.background = element_rect(fill = "#EBEBEB"),
+  strip.text = element_text(face = "bold"),
+  legend.box.background = element_rect(fill = "#EBEBEB"))
+
+```
+
+# -- ANÁLISIS --
+
+## CASO 1
+
+```{r}
+#| code-fold: true
+
+nacionalismo <- 
+  datos_limpios |> 
+  mutate(categoria=case_when(
+    str_detect(siglas, "PSOE|PP|VOX|CS|MPAÍS|PODEMOS") ~ "nacional",
+    TRUE ~"nacionalista")) |> 
+  mutate(votos_t = sum(votos), .by = fecha) |> 
+  group_by(fecha,categoria) |> 
+  reframe(prop_voto=100*sum(votos)/votos_t) |> 
+  distinct(fecha, categoria, prop_voto)
+
+```
+
+## 
+
+```{r}
+#| echo: false
+#| fig-cap: "El voto de los partidos nacionales y nacionalistas se suelen repartir sobre un 80%, y un 20% aproximidamente respectivamente. Hay que destacar que en 2011 vemos que los partidos nacionalistas tuvieron más votos de lo habitual"
+
+ggplot(nacionalismo) +
+  geom_col(aes(x=categoria, y=prop_voto, fill=categoria)) +
+  facet_wrap(~fecha, scales="free_y") + 
+  scale_fill_manual(values=latin_palette(name="rosalia"))
+
+```
+
+## CASO 2
+
+```{r}
+#| code-fold: true
+
+ganador <- datos_limpios |> 
+  filter(censo>100000) |> 
+  group_by(fecha,cod_mun) |> 
+  filter(votos==max(votos)) |> 
+  left_join(cod_mun, by="cod_mun") |> 
+  relocate(municipio, .after=cod_mun) |>
+  ungroup() |> 
+  select(fecha, municipio, siglas)
+
+```
+
+## 
+
+```{r}
+#| echo: false
+#| fig-cap: "Partido ganador en los municipios de más de 100 000 habitantes de censo en cada una de las elecciones"
+
+ggplot(ganador) +
+  geom_bar(aes(x = siglas, fill = siglas),  alpha = 0.75, color ="black") +
+  scale_fill_manual(values = c("#067c29", "#ffbf41","#E0EEEE",
+                               "#936bf4", "#0056a3", "#e40414","#5ac035")) +
+  facet_wrap(~fecha) +
+  theme(axis.text.x = element_blank()) +
+  labs(title = "Ganador en cada elección",
+       subtitle = "Censo > 100.000", 
+       y = "nº municipios") 
+
+```
+
+## CASO 3
+
+```{r}
+#| code-fold: true
+
+n_votado <- function(partidos, votos, n = 1) {
+  
+  datos <- tibble(partidos, votos) 
+  siglas <-
+    datos |>
+    slice_max(n = n, votos, with_ties = FALSE) |> 
+    slice_min(n = 1, votos, with_ties = FALSE) |> 
+    pull(partidos)
+  
+  return(siglas)
+}
+
+# n = 1 te da el primero
+# n = 2 te da el segundo con más votos
+sol <- c(n_votado(c("A", "B", "C"), c(1,4,6)), 
+         n_votado(c("A", "B", "C"), c(1,4,6), n=2))
+
+sol
+
+ganadores <- datos_limpios |> 
+  group_by(fecha,siglas) |> 
+  summarise(votos=sum(votos)) |> 
+  mutate(ganador= n_votado(siglas, votos),
+         segundo = n_votado(siglas, votos, n = 2)) |> 
+  distinct(fecha, ganador, segundo) |> 
+  ungroup()
+
+```
+
+```{r}
+#| include: false
+
+# ganador haya sido PSOE, ¿segundo?
+sol1 <- 
+  ganadores |> 
+  group_by(fecha) |> 
+  filter(ganador=="PSOE") |> 
+  distinct(segundo) |> 
+  ungroup()
+
+# ganador haya sido PP, ¿segundo?
+sol2 <- 
+  ganadores |> 
+  group_by(fecha) |> 
+  filter(ganador=="PP") |> 
+  distinct(segundo) |> 
+  ungroup()
+
+```
+
+El PSOE fue ganador en `r sol1$fecha`, quedando en segundo lugar el `r sol1 |> distinct(segundo)`
+
+Cuando el PP ganó, `r sol2$fecha`, quedó en segundo lugar el `r sol2 |> distinct(segundo)`
+
+## CASO 4
+
+Código municipios
+
+```{r}
+#| code-fold: true
+
+codigo_municipio <- datos_limpios |> 
+  filter(censo > 2000) |> 
+  group_by(fecha, cod_mun) |> 
+  mutate(prop_voto = votos / sum(votos)) |> 
+  mutate(ganador = n_votado(siglas, votos),
+         segundo = n_votado(siglas, votos, n = 2)) |> 
+  filter(siglas %in% c(ganador, segundo)) |> 
+  mutate(diferencia = if (n() == 2) abs(100 *diff(prop_voto)) else NA_real_) |> 
+  distinct(cod_mun, .keep_all=TRUE) |> 
+  ungroup() |> 
+  group_by(fecha) |> 
+  slice_max(order_by = diferencia, n = 10) |> 
+  arrange(fecha, desc(diferencia)) |> 
+  left_join(cod_mun, by="cod_mun") |> 
+  relocate(municipio, .after=cod_mun) |> 
+  select(fecha,municipio,diferencia,ganador,segundo)
+
+codigo_2008_municipio <- codigo_municipio |> 
+  filter(year(fecha)==2008) |> 
+  arrange(desc(diferencia))
+
+codigo_2019_municipio <- codigo_municipio |> 
+  filter(year(fecha)==2019 & month(fecha)==11) |> 
+  arrange(desc(diferencia))
+
+```
+
+```{r}
+#| echo: false
+
+ggplot(codigo_2008_municipio) +
+  geom_col(aes(x=fct_reorder(municipio, diferencia), 
+               y=diferencia, fill=diferencia)) +
+  scale_fill_gradient2(low = "#a3c15f", high = "#ad3a57", 
+                       mid = "#e8c07b", midpoint = 65) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Municipio", y = "Diferencia",
+       title="PROPORCIÓN DE DIFERENCIA ENTRE MUNICIPIOS EN 2008")
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+ggplot(codigo_2019_municipio) +
+  geom_col(aes(x=fct_reorder(municipio, diferencia), 
+               y=diferencia, fill=diferencia)) +
+  scale_fill_gradient2(low = "#a3c15f", high = "#ad3a57", 
+                       mid = "#e8c07b", midpoint = 55) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Municipio", y = "Diferencia",
+       title="PROPORCIÓN DE DIFERENCIA ENTRE MUNICIPIOS EN 2019")
+
+
+```
+
+## 
+
+Por provincia
+
+```{r}
+#| code-fold: true
+
+codigo_provincia <- datos_limpios |> 
+  group_by(fecha, codigo_provincia, siglas) |>
+  mutate(votos=sum(votos)) |> 
+  select(fecha, codigo_provincia, siglas, votos) |> 
+  distinct(fecha,codigo_provincia,siglas,votos) |> 
+  ungroup() |> 
+  group_by(fecha,codigo_provincia) |> 
+  mutate(prop_voto=votos/sum(votos)) |> 
+  mutate(ganador = n_votado(siglas, votos),
+         segundo = n_votado(siglas, votos, n = 2)) |> 
+  filter(siglas %in% c(ganador, segundo)) |> 
+  mutate(diferencia= 100 * abs(diff(prop_voto))) |> 
+  distinct(codigo_provincia, .keep_all=TRUE) |> 
+  ungroup() |> 
+  group_by(fecha) |> 
+  slice_max(order_by = diferencia, n = 10) |> 
+  arrange(fecha, desc(diferencia)) |> 
+  ungroup() |> 
+  select(fecha, codigo_provincia, ganador, segundo, diferencia )
+
+codigo_2008_provincia <- codigo_provincia |> 
+  filter(year(fecha)==2008)
+
+codigo_2019_provincia <- codigo_provincia |> 
+  filter(year(fecha)==2019 & month(fecha)==11)
+
+```
+
+```{r}
+#| echo: false
+
+ggplot(codigo_2008_provincia) +
+  geom_col(aes(x=fct_reorder(codigo_provincia, diferencia), 
+               y=diferencia, fill=diferencia)) +
+  scale_fill_gradient2(low = "#6ed3cf", high = "#e62739", 
+                       mid = "#ffb380", midpoint = 22.5) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Provincia", y = "Diferencia",
+       title="PROPORCIÓN DE DIFERENCIA ENTRE PROVINCIAS EN 2008")
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+ggplot(codigo_2019_provincia) +
+  geom_col(aes(x=fct_reorder(codigo_provincia, diferencia), 
+               y=diferencia, fill=diferencia)) +
+  scale_fill_gradient2(low = "#6ed3cf", high = "#e62739", 
+                       mid = "#ffb380", midpoint = 22.5) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Provincia", y = "Diferencia", 
+       title="PROPORCIÓN DE DIFERENCIA ENTRE PROVINCIAS EN 2019") 
+
+
+```
+
+## 
+
+Por comunidad
+
+```{r}
+#| code-fold: true
+
+codigo_comunidades <- datos_limpios |> 
+  group_by(fecha, codigo_ccaa, siglas) |>
+  mutate(votos=sum(votos)) |> 
+  select(fecha, codigo_ccaa, siglas, votos) |> 
+  distinct(fecha,codigo_ccaa,siglas,votos) |> 
+  ungroup() |> 
+  group_by(fecha,codigo_ccaa) |> 
+  mutate(prop_voto=votos/sum(votos)) |> 
+  mutate(ganador = n_votado(siglas, votos),
+         segundo = n_votado(siglas, votos, n = 2)) |> 
+  filter(siglas %in% c(ganador, segundo)) |> 
+  mutate(diferencia= 100 * abs(diff(prop_voto))) |> 
+  distinct(codigo_ccaa, .keep_all=TRUE) |> 
+  ungroup() |> 
+  group_by(fecha) |> 
+  slice_max(order_by = diferencia, n = 10) |> 
+  arrange(fecha, desc(diferencia)) |> 
+  ungroup() |> 
+  select(fecha, codigo_ccaa, ganador, segundo, diferencia )
+
+codigo_2008_ccaa <- codigo_comunidades |> 
+  filter(year(fecha)==2008)
+
+codigo_2019_ccaa <- codigo_comunidades |> 
+  filter(year(fecha)==2019 & month(fecha)==11)
+
+```
+
+```{r}
+#| echo: false
+
+ggplot(codigo_2008_ccaa) +
+  geom_col(aes(x=fct_reorder(codigo_ccaa, diferencia), 
+               y=diferencia, fill=diferencia)) +
+  scale_fill_gradient2(low = "#7EB5A6", high = "#5E548E", 
+                       mid = "#FFD97D", midpoint = 17) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Comunidad", y = "Diferencia", 
+       title="PROPORCIÓN DE DIFERENCIA ENTRE COMUNIDADES EN 2008")
+
+```
+
+## 
+
+```{r}
+#| echo: false
+#| fig-cap: "Vemos que las diferencia se ha ido reduciendo a lo largo de los años entre muncipios, provincias, y comunidades. Podemos decir que está la población más polarizada actualmente que en 2008. Asimismo, podemos ver que algunos municipios, provincias y comunidades han mantenido la diferencia saliendo en ambas gráficas"
+
+ggplot(codigo_2019_ccaa) +
+  geom_col(aes(x=fct_reorder(codigo_ccaa, diferencia), 
+               y=diferencia, fill=diferencia)) +
+  scale_fill_gradient2(low = "#7EB5A6", high = "#5E548E", 
+                       mid = "#FFD97D", midpoint = 17) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Comunidad", y = "Diferencia", 
+       title="PROPORCIÓN DE DIFERENCIA ENTRE COMUNIDADES EN 2019")
+
+
+```
+
+## CASO 5
+
+### Porcentajes de votos nulos por municipio en cada elección
+
+```{r}
+#| code-fold: true
+
+votos_nul <- 
+  datos_limpios |> 
+  select(fecha,cod_mun,votos_nulos,votos_candidaturas,votos_blancos) |> 
+  distinct(fecha,cod_mun,.keep_all = TRUE) |> 
+  mutate(porcentaje_nulos=votos_nulos*100/(votos_candidaturas + votos_blancos),
+         .by =c(fecha,cod_mun)) |>
+  arrange(desc(porcentaje_nulos)) |> 
+  left_join(cod_mun, by="cod_mun") |> 
+  relocate(municipio, .before = cod_mun) |> 
+  select(fecha, municipio, porcentaje_nulos)
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+ggplot(votos_nul |> filter(year(fecha) == 2008, porcentaje_nulos > 6.5), 
+       aes(y = fct_reorder(municipio, porcentaje_nulos), 
+           x = porcentaje_nulos, fill = porcentaje_nulos)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0) +
+  scale_x_continuous(labels = scales::label_number(suffix = "%")) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje_nulos)), 
+            hjust = -0.1, size = 3.5) +  # Añadir etiquetas de texto
+  labs(title = "Porcentaje de Votos Nulos por Municipio en 2008", 
+       x = "Porcentaje de Votos Nulos", 
+       y = "Municipio") 
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+ggplot(votos_nul |> filter(year(fecha) == 2011, porcentaje_nulos > 9), 
+       aes(y = fct_reorder(municipio, porcentaje_nulos), 
+           x = porcentaje_nulos, fill = porcentaje_nulos)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0) +
+  scale_x_continuous(labels = scales::label_number(suffix = "%")) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje_nulos)), 
+            hjust = -0.1, size = 3.5) +  # Añadir etiquetas de texto
+  labs(title = "Porcentaje de Votos Nulos por Municipio en 2011", 
+       x = "Porcentaje de Votos Nulos", 
+       y = "Municipio") 
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+ggplot(votos_nul |> filter(year(fecha) == 2015, porcentaje_nulos > 8), 
+       aes(y = fct_reorder(municipio, porcentaje_nulos), 
+           x = porcentaje_nulos, fill = porcentaje_nulos)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0) +
+  scale_x_continuous(labels = scales::label_number(suffix = "%")) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje_nulos)),
+            hjust = -0.1, size = 3.5) +  # Añadir etiquetas de texto
+  labs(title = "Porcentaje de Votos Nulos por Municipio en 2015", 
+       x = "Porcentaje de Votos Nulos", 
+       y = "Municipio")
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+ggplot(votos_nul |> filter(year(fecha) == 2016, porcentaje_nulos > 7.5), 
+       aes(y = fct_reorder(municipio, porcentaje_nulos), 
+           x = porcentaje_nulos, fill = porcentaje_nulos)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0) +
+  scale_x_continuous(labels = scales::label_number(suffix = "%")) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje_nulos)), 
+            hjust = -0.1, size = 3.5) +  # Añadir etiquetas de texto
+  labs(title = "Porcentaje de Votos Nulos por Municipio en 2016", 
+       x = "Porcentaje de Votos Nulos", 
+       y = "Municipio") 
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+ggplot(votos_nul |> filter(year(fecha) == 2019, month(fecha) == 04,
+                           porcentaje_nulos > 9), 
+       aes(y = fct_reorder(municipio, porcentaje_nulos), x = porcentaje_nulos, 
+           fill = porcentaje_nulos)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0) +
+  scale_x_continuous(labels = scales::label_number(suffix = "%")) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje_nulos)), 
+            hjust = -0.1, size = 3.5) +  # Añadir etiquetas de texto
+  labs(title = "Porcentaje de Votos Nulos por Municipio en 2019-04", 
+       x = "Porcentaje de Votos Nulos", 
+       y = "Municipio") 
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+ggplot(votos_nul |> filter(year(fecha) == 2019, month(fecha) == 11,
+                           porcentaje_nulos > 9), 
+       aes(y = fct_reorder(municipio, porcentaje_nulos), x = porcentaje_nulos, 
+           fill = porcentaje_nulos)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0) +
+  scale_x_continuous(labels = scales::label_number(suffix = "%")) +
+  geom_text(aes(label = sprintf("%.1f%%", porcentaje_nulos)), 
+            hjust = -0.1, size = 3.5) +  # Añadir etiquetas de texto
+  labs(title = "Porcentaje de Votos Nulos por Municipio en 2019-11",
+       x = "Porcentaje de Votos Nulos", 
+       y = "Municipio") 
+
+```
+
+## 
+
+### Porcentaje de votos nulos por municipio, en media
+
+```{r}
+#| code-fold: true
+
+votos_nul_medio <-
+  datos_limpios |> 
+  select(fecha,cod_mun,votos_nulos,votos_candidaturas,votos_blancos) |> 
+  distinct(fecha,cod_mun,.keep_all = TRUE) |>  
+  mutate(porcentaje_nulos=votos_nulos*100/(votos_candidaturas + votos_blancos),.by =c(fecha,cod_mun)) |> 
+  mutate(media_nulos=mean(porcentaje_nulos),.by = cod_mun) |> 
+  arrange(desc(media_nulos)) |> 
+  left_join(cod_mun, by="cod_mun") |> 
+  relocate(municipio, .before = cod_mun) |> 
+  distinct(cod_mun, .keep_all = TRUE) |> 
+  select(municipio, media_nulos)
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+ggplot(votos_nul_medio |> filter(media_nulos > 5), 
+       aes(y = fct_reorder(municipio, media_nulos), 
+           x = media_nulos, fill = media_nulos)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0) +
+  scale_x_continuous(labels = scales::label_number(suffix = "%")) +
+  geom_text(aes(label = sprintf("%.1f%%", media_nulos)), 
+            hjust = -0.1, size = 3.5) +  # Añadir etiquetas de texto
+  labs(title = "Municipios con mayor % de Votos Nulos", 
+       subtitle = "Media de votos nulos en todas las eleccion",
+       x = "Media Votos Nulos", 
+       y = "Municipio") 
+
+```
+
+## CASO 6
+
+##### Sitios con mayor participación y su ganador
+
+```{r}
+#| code-fold: true
+
+maxi <- 
+  datos_limpios |> 
+  group_by(fecha, cod_mun) |> 
+  mutate(votos_mun = sum(votos, na.rm = TRUE), 
+         prc_participacion = 100*(votos_mun+votos_blancos+votos_nulos)/censo) |>
+  filter(votos == max(votos)) |> 
+  ungroup() |> 
+  slice_max(prc_participacion, n=10) |> 
+  mutate(prc_participacion = if_else(prc_participacion > 100, NA,prc_participacion)) |> 
+  left_join(cod_mun, by = "cod_mun") |> 
+  relocate(municipio, .after = cod_mun) |> 
+  select(fecha, municipio, siglas, votos, prc_participacion)
+
+maxi
+
+```
+
+## 
+
+```{r}
+#| echo: false
+#| fig-cap: "Como se puede observar el PP tiene predominancia en los municipios con mayor participación"
+
+ggplot(maxi) +
+  geom_bar(aes(x = siglas, fill = siglas),  alpha = 0.75, color ="black") +
+  scale_fill_manual(values = c("#fa4f00","#E0EEEE", "#936bf4",
+                               "#0056a3", "#e40414","#5ac035")) +
+  facet_wrap(~fecha) +
+  theme(axis.text.x = element_blank()) +
+  labs(title = "Ganador por municipio",
+       subtitle = "Con 100% participación", 
+       y = "nº municipios") 
+
+```
+
+## 
+
+#### Sitios con menor participación y su ganador
+
+```{r}
+#| code-fold: true
+
+mini <- 
+  datos_limpios |> 
+  group_by(fecha, cod_mun) |> 
+  mutate(votos_mun = sum(votos, na.rm = TRUE), 
+         prc_participacion = 100*(votos_mun+votos_blancos)/censo) |>
+  filter(votos == max(votos)) |>
+  ungroup() |> 
+  slice_min(prc_participacion, n=30) |> 
+  left_join(cod_mun, by = "cod_mun") |> 
+  relocate(municipio, .after = cod_mun) |> 
+  select(fecha, municipio, siglas, votos, prc_participacion) |> 
+  arrange(fecha)
+
+mini
+
+```
+
+## 
+
+```{r}
+#| echo: false
+#| fig-cap: "El EAJPNV se ve beneficiado en los sitios con menor participación, ganando en su mayoría"
+
+ggplot(mini) +
+  geom_bar(aes(x = siglas, fill = siglas),  alpha = 0.75, color ="black") +
+  scale_fill_manual(values = c("#fa4f00","#E0EEEE", "#936bf4",
+                               "#0056a3", "#e40414","#5ac035")) +
+  facet_wrap(~fecha) +
+  theme(axis.text.x = element_blank()) +
+  labs(title = "Ganador por municipio",
+       subtitle = "Con participación baja", 
+       y = "nº municipios") 
+
+```
+
+## CASO 7
+
+### Relación censo-votos
+
+```{r}
+#| code-fold: true
+
+relacion <-
+  datos_limpios |> 
+  mutate(porc_part = ((sum(votos)+votos_blancos+votos_nulos)*100)/censo,
+         .by = c(fecha, cod_mun)) |> 
+  distinct(fecha, cod_mun, .keep_all = TRUE) |>
+  group_by(fecha, censo > 10000 ) |> 
+  summarise(porc_part_promedio = mean(porc_part, na.rm = TRUE))
+
+# Calcular el número de victorias por partido y ciudad
+victorias <- datos_limpios |> 
+  group_by(fecha, cod_mun) |> 
+  filter(votos == max(votos)) |> 
+  ungroup() |> 
+  group_by(fecha, ciudad = (censo > 10000), siglas) |> 
+  count(siglas) |> 
+  rename(victorias=n) |> 
+  group_by(fecha, ciudad) |> 
+  mutate(victorias_t = sum(victorias, na.rm = TRUE)) |> 
+  ungroup()
+
+# Calcular el porcentaje de victorias
+porc_victorias <- victorias |> 
+  mutate(porc_vict = case_when(
+    ciudad == TRUE ~ victorias * 100 / victorias_t,
+    ciudad == FALSE ~ victorias * 100 / victorias_t
+  ))
+
+
+```
+
+## 
+
+### Ganadores. Rural-Ciudad
+
+```{r}
+#| echo: false
+#| fig-subcap: "El primero y el segundo se mantuvieron en ambos lugares, pero sin embargo, podemos ver que en las ciudades predomina más el voto de Podemos (que se encuentra en tercer lugar) que en lo rural"
+
+graf <- 
+  ggplot(porc_victorias |> filter(year(fecha)==2015)) +
+  geom_col(aes(x = ciudad, fill = siglas, y = porc_vict), 
+           alpha = 0.75, position = "dodge2") +
+  scale_fill_manual(values = c("#fa4f00", "#067c29","#08ccb4", "#ffbf41",
+                               "#d6502a", "grey", "#936bf4",
+                               "#0056a3", "#e40414","#5ac035")) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  labs(title = "% Victorias en 2015",
+       subtitle = "Rural vs Ciudades")
+
+graf
+
+```
+
+## 
+
+```{r}
+#| echo: false
+#| fig-cap: "A lo largo de los años el PSOE ha ido ganando más votos en lo rural y en las ciudades, siendo la diferencia con el resto de partidos mayor en estas"
+
+graf2 <- 
+  ggplot(porc_victorias |> filter(year(fecha)==2019, month(fecha) == 11)) +
+  geom_col(aes(x = ciudad, fill = siglas, y = porc_vict), 
+           alpha = 0.75, position = "dodge2")+
+  scale_fill_manual(values = c("#74b4dc", "#fa4f00", "#067c29","#08ccb4",
+                               "#ffbf41", "#d6502a", "grey", "#936bf4",
+                               "#0056a3", "#e40414","#5ac035"))  +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  labs(title = "% Victorias en 2019-11",
+       subtitle = "Rural vs Ciudades")
+
+graf2
+
+```
+
+## 
+
+::: columns
+::: {.column width="50%"}
+```{r}
+#| echo: false
+
+plotly::ggplotly(graf + guides(fill = "none"))
+
+
+```
+:::
+
+::: {.column width="50%"}
+```{r}
+#| echo: false
+
+plotly::ggplotly(graf2 + guides(fill = "none"))
+
+```
+:::
+:::
+
+## CASO 8
+
+### En general
+
+```{r}
+#| code-fold: true
+
+votos_partido <- datos_limpios |> 
+  group_by(fecha,siglas) |> 
+  summarise(votos_nac=sum(votos)) |> 
+  ungroup() |> 
+  mutate(year=year(fecha), month=month(fecha)) # para porder unir con encuestas
+
+votos_total <- datos_limpios |> 
+  group_by(fecha) |> 
+  summarise(total_voto= sum(votos)) # para tener cuantos han sido los votos totales
+
+votos_partido <- votos_partido |> 
+  left_join(votos_total, by="fecha") |> 
+  mutate(prop_voto = (votos_nac * 100)/total_voto) 
+
+```
+
+### Código por casa encuestadora y partido
+
+```{r}
+#| code-fold: true
+
+int_voto_casa <- encuestas_limpias |>
+  mutate(year=year(date_elec), month=month(date_elec))  |> 
+  select(id_pollster, pollster, est_voto_sigla, partidos, year, month)
+
+error_casa_encuestadora <- votos_partido |> 
+  inner_join(int_voto_casa, by=c("year", "month", "siglas"="partidos")) |> 
+  group_by(year,month,siglas, id_pollster) |> 
+  mutate(est_voto_sigla=mean(est_voto_sigla)) |> 
+  distinct(id_pollster, .keep_all=TRUE) |> 
+  mutate(diferencia = est_voto_sigla - prop_voto ) |> 
+  ungroup() |> 
+  select(fecha, siglas, id_pollster, pollster, prop_voto, est_voto_sigla, diferencia)
+
+error_casa_encuestadora
+
+```
+
+## 
+
+```{r}
+#| code-fold: true
+
+# Para las gráficas 2008
+media_global_psoe <- error_casa_encuestadora |> 
+  filter(fecha=="2008-03-01", siglas=="PSOE") |> 
+  mutate(media_global=mean(diferencia)) |> 
+  distinct(media_global) |> 
+  pull(media_global)
+
+error_psoe <- error_casa_encuestadora |> 
+  filter(fecha=="2008-03-01", siglas=="PSOE") |> 
+  slice_sample(n=10) |> 
+  distinct(pollster, .keep_all=TRUE)
+
+```
+
+```{r}
+#| echo: false
+
+error_psoe |> 
+  ggplot(aes(x=fct_reorder(pollster, diferencia), y = diferencia)) + 
+  geom_col(aes(fill = diferencia)) +
+  scale_fill_gradient2(low = "#a3c15f", high = "#ad3a57",
+                        mid = "#e8c07b", midpoint = 4.5) +
+  geom_hline(yintercept = round(media_global_psoe)) +
+  coord_flip() +
+  labs(y = "Diferencia",
+       x = "Casas encuestadoras",
+       fill = "Diferencia",
+       title="Error PSOE en elecciones de 2008")
+
+```
+
+## 
+
+```{r}
+#| code-fold: true
+
+# Para las gráficas 2019
+media_global_psoe_2019 <- error_casa_encuestadora |> 
+  filter(fecha=="2019-11-01", siglas=="PSOE") |> 
+  mutate(media_global=mean(diferencia)) |> 
+  distinct(media_global) |> 
+  pull(media_global)
+
+error_psoe_2019 <- error_casa_encuestadora |> 
+  filter(fecha=="2019-11-01", siglas=="PSOE") |> 
+  slice_sample(n=10) |> 
+  distinct(pollster, .keep_all=TRUE)
+
+```
+
+```{r}
+#| echo: false
+#| fig-subcap: "Concretando para el PSOE, como podemos comprobar el error medio ha disminuido desde 2008 hasta las últimas elecciones en 2019. Aún así, las encuestas suelen dar al PSOE más votos de lo que realmente luego obtienen en las encuestas"
+
+error_psoe_2019 |> 
+  ggplot(aes(x=fct_reorder(pollster, diferencia), y = diferencia)) + 
+  geom_col(aes(fill = diferencia)) +
+  scale_fill_gradient2(low = "#a3c15f", high = "#ad3a57",
+                        mid = "#e8c07b", midpoint = 5) +
+  geom_hline(yintercept = round(media_global_psoe_2019)) +
+  coord_flip() +
+  labs(y = "Diferencia",
+       x = "Casas encuestadoras",
+       fill = "Diferencia",
+       title="Error PSOE en elecciones de 2019")
+
+
+```
+
+## 
+
+### Código por partido
+
+```{r}
+#| code-fold: true
+
+int_voto <- encuestas_limpias |> 
+  group_by(date_elec, partidos) |> 
+  summarise(int_voto=mean(est_voto_sigla)) |> 
+  ungroup() |> 
+  mutate(year=year(date_elec), month=month(date_elec)) 
+
+
+error <- votos_partido |> 
+  inner_join(int_voto, by=c("year", "month", "siglas"="partidos")) |> 
+  select(-date_elec, -year, -month) |> 
+  mutate(diferencia=abs(int_voto-prop_voto))
+  
+```
+
+## 
+
+```{r}
+#| echo: false
+#| fig-cap: "Gráfico por siglas del error de las encuestas cada año"
+
+error |> 
+  ggplot(aes(x=fecha, y=diferencia, fill = fecha)) +
+  geom_col() +
+  facet_wrap(~siglas, scales="free_y")
+
+```
+
+## 
+
+```{r}
+#| echo: false
+#| fig-cap: "Gráfico por año del error de las encuestas a los partidos"
+
+a <- error |> 
+  ggplot(aes(x=siglas, y=diferencia, fill = siglas)) +
+  geom_col() +
+  scale_fill_manual(values = c("#74b4dc", "#1c3687", "#fa4f00","#067c29",
+                               "#08ccb4", "#ffbf41", "#d6502a","#167c6c",
+                               "grey", "#936bf4",  
+                               "#0056a3", "#e40414","#5ac035")) +
+  facet_wrap(~fecha, scales="free_y") +
+  theme(axis.text.x = element_blank()) 
+
+plotly::ggplotly(a)
+
+```
+
+## CASO 9
+
+### ¿En qué elección se equivocaron más las encuestas?
+
+```{r}
+
+error_elec <- 
+  error_casa_encuestadora |> 
+  summarise(media_error = mean(diferencia), .by = c(fecha, pollster)) |> 
+  filter(media_error==max(media_error))
+
+```
+
+Las encuesta que más se equivocó fue la realizada por `r error_elec$pollster` en las elecciones del `r error_elec$fecha` con una media de error del `r error_elec$media_error`
+
+## 
+
+```{r}
+#| echo: false
+#| fig-cap: "Muestra de 20 valores máximos visualizando qué año aparece más veces"
+
+plot <- 
+  ggplot(error_casa_encuestadora |> 
+         summarise(media_error = mean(diferencia), .by = c(fecha, pollster)) |> 
+         slice_max(media_error, n=20)) +
+  geom_bar(aes(x = fecha), fill = "lightblue") +
+  scale_x_date(breaks = "2.5 year") +
+  labs(title = "Error encuestas", 
+       y = "aparición") 
+
+plotly::ggplotly(plot)
+
+```
+
+## CASO 10
+
+```{r}
+#| echo: false
+
+error_casa_encuestadora |> 
+  filter(str_detect(siglas, "PSOE|PP|VOX|CS|MP|UP"), year(fecha) == 2008) |> 
+  ggplot() +
+  geom_col(aes(x = pollster, fill = siglas, y = diferencia), 
+           alpha = 0.75, position = "dodge2") +
+  scale_fill_manual(values = c("#0056a3", "#e40414")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(y = "Casa encuestadora",
+       title = "Error de las encuestas en partidos nacionales 2008")
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+error_casa_encuestadora |> 
+  filter(str_detect(siglas, "PSOE|PP|VOX|CS|MP|UP"), year(fecha) == 2011) |> 
+  ggplot() +
+  geom_col(aes(x = pollster, fill = siglas, y = diferencia), 
+           alpha = 0.75, position = "dodge2")+
+  scale_fill_manual(values = c("#0056a3", "#e40414")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(y = "Casa encuestadora",
+       title = "Error de las encuestas en partidos nacionales 2011")
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+error_casa_encuestadora |> 
+  filter(str_detect(siglas, "PSOE|PP|VOX|CS|MP|UP"), year(fecha) == 2015) |> 
+  ggplot() +
+  geom_col(aes(x = pollster, fill = siglas, y = diferencia), 
+           alpha = 0.75, position = "dodge2")+
+  scale_fill_manual(values = c("#fa4f00", "#d6502a",
+                               "#0056a3", "#e40414")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(y = "Casa encuestadora",
+       title = "Error de las encuestas en partidos nacionales 2015")
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+error_casa_encuestadora |> 
+  filter(str_detect(siglas, "PSOE|PP|VOX|CS|MP|UP"), year(fecha) == 2016) |> 
+  ggplot() +
+  geom_col(aes(x = pollster, fill = siglas, y = diferencia), 
+           alpha = 0.75, position = "dodge2")+
+  scale_fill_manual(values = c("#fa4f00", "#0056a3", "#e40414")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(y = "Casa encuestadora",
+       title = "Error de las encuestas en partidos nacionales 2016")
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+error_casa_encuestadora |> 
+  filter(str_detect(siglas, "PSOE|PP|VOX|CS|MP|UP"), 
+         year(fecha) == 2019, month(fecha) == 04) |> 
+  ggplot() +
+  geom_col(aes(x = pollster, fill = siglas, y = diferencia), 
+           alpha = 0.75, position = "dodge2")+
+  scale_fill_manual(values = c("#fa4f00", "#d6502a",
+                               "#0056a3", "#e40414","#5ac035")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(y = "Casa encuestadora",
+       title = "Error de las encuestas en partidos nacionales 2019-04")
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+error_casa_encuestadora |> 
+  filter(str_detect(siglas, "PSOE|PP|VOX|CS|MP|UP"), 
+         year(fecha) == 2019, month(fecha) == 11) |> 
+  ggplot() +
+  geom_col(aes(x = pollster, fill = siglas, y = diferencia), 
+           alpha = 0.75, position = "dodge2")+
+  scale_fill_manual(values = c("#fa4f00", "#d6502a","#167c6c",
+                               "#0056a3", "#e40414","#5ac035")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(y = "Casa encuestadora",
+       title = "Error de las encuestas en partidos nacionales 2019-11")
+
+```
+
+## CASO 11
+
+```{r}
+#| echo: false
+#| fig-subcap: "Viendo la gráfica, las encuestas que más aciertan son aquellos cuyos valores sean más cercanos al 0 y el color de su barra sea blanco, mientras que los que más fallan son aquellos que se alejan del 0 y están en los extremos"
+
+data_comparacion_graf <- 
+  error_casa_encuestadora |> 
+  filter(year(fecha)==2008) |> 
+  group_by(pollster) |> 
+  mutate(media_dif=mean(diferencia)) |> 
+  ungroup() |> 
+  distinct(pollster, .keep_all=TRUE)
+
+gr2008 <- ggplot(data_comparacion_graf, aes(y = fct_reorder(pollster,media_dif), x = media_dif)) + 
+  geom_col(aes(fill = media_dif)) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0) +
+  geom_vline(xintercept = mean(data_comparacion_graf$media_dif)) +
+  labs(y = "Casa encuestadora",
+       x = "Error en la estimacion",
+       fill = "Error de estimacion",
+       title = "Error de estimacion en 2008")
+
+gr2008
+
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+data_comparacion_graf_2011<- error_casa_encuestadora |> 
+  filter(year(fecha)==2011) |> 
+  group_by(pollster) |> 
+  mutate(media_dif=mean(diferencia)) |> 
+  ungroup() |> 
+  distinct(pollster, .keep_all=TRUE)
+
+gr2011 <- ggplot(data_comparacion_graf_2011, 
+                 aes(y = fct_reorder(pollster,media_dif), x = media_dif )) + 
+  geom_col(aes(fill = media_dif)) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = -0.5) +
+  geom_vline(xintercept =mean(data_comparacion_graf_2011$media_dif)) +
+  labs(y = "Casa encuestadora",
+       x = "Error en la estimacion",
+       fill = "Error de estimacion",
+       title = "Error de estimacion en 2011")
+gr2011
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+data_comparacion_graf_2015<- error_casa_encuestadora |> 
+  filter(year(fecha)==2015) |> 
+  group_by(pollster) |> 
+  mutate(media_dif=mean(diferencia)) |> 
+  ungroup() |> 
+  distinct(pollster, .keep_all=TRUE)
+
+
+gr2015 <- ggplot(data_comparacion_graf_2015, 
+                 aes(y = fct_reorder(pollster,media_dif), x = media_dif)) + 
+  geom_col(aes(fill = media_dif)) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = -0.6) +
+  geom_vline(xintercept =mean(data_comparacion_graf_2015$media_dif)) +
+  labs(y = "Casa encuestadora",
+       x = "Error en la estimacion",
+       fill = "Error de estimacion",
+       title = "Error de estimacion en 2015")
+
+gr2015
+
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+data_comparacion_graf_2016<- error_casa_encuestadora |> 
+  filter(year(fecha)==2016) |> 
+  group_by(pollster) |> 
+  mutate(media_dif=mean(diferencia)) |> 
+  ungroup() |> 
+  distinct(pollster, .keep_all=TRUE)
+
+
+gr2016 <- ggplot(data_comparacion_graf_2016, aes(y = fct_reorder(pollster, media_dif) , x = media_dif)) + 
+  geom_col(aes(fill = media_dif)) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0.65) +
+  geom_vline(xintercept =mean(data_comparacion_graf_2016$media_dif)) +
+  labs(y = "Casa encuestadora",
+       x = "Error en la estimacion",
+       fill = "Error de estimacion",
+       title = "Error de estimacion en 2016")
+
+gr2016
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+data_comparacion_graf_2019<- error_casa_encuestadora |> 
+  filter(year(fecha)==2019, month(fecha)==04) |> 
+  group_by(pollster) |> 
+  mutate(media_dif=mean(diferencia)) |> 
+  ungroup() |> 
+  distinct(pollster, .keep_all=TRUE)
+
+
+gr2019 <- ggplot(data_comparacion_graf_2019, aes(y = fct_reorder(pollster, media_dif), x = media_dif)) + 
+  geom_col(aes(fill = media_dif)) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0) +
+  geom_vline(xintercept =mean(data_comparacion_graf_2019$media_dif)) +
+  labs(y = "Casa encuestadora",
+       x = "Error en la estimacion",
+       fill = "Error de estimacion",
+      title = "Error de estimacion en 2019")
+gr2019
+
+```
+
+## 
+
+```{r}
+#| echo: false
+
+data_comparacion_graf_2019_11 <- error_casa_encuestadora |> 
+  filter(year(fecha)==2019, month(fecha)==11) |> 
+  group_by(pollster) |> 
+  mutate(media_dif=mean(diferencia)) |> 
+  ungroup() |> 
+  distinct(pollster, .keep_all=TRUE)
+
+
+gr2019_11 <- ggplot(data_comparacion_graf_2019_11, 
+                    aes(y = fct_reorder(pollster, media_dif), x = media_dif)) + 
+  geom_col(aes(fill = media_dif)) +
+  scale_fill_gradient2(low = "blue", high = "red",
+                        mid = "white", midpoint = 0) +
+  geom_vline(xintercept =mean(data_comparacion_graf_2019_11$media_dif)) +
+  labs(y = "Casa encuestadora",
+       x = "Error en la estimacion",
+       fill = "Error de estimacion",
+      title = "Error de estimacion en 2019")
+
+gr2019_11
+
+```
+
+## 
+
+```{r}
+#| code-fold: true
+
+# Ajustar el fondo de cada gráfico
+gr2008 <- gr2008 + theme(panel.background = element_rect(fill = "white"), plot.background = element_rect(fill = "white"))
+gr2011 <- gr2011 + theme(panel.background = element_rect(fill = "white"), plot.background = element_rect(fill = "white"))
+gr2015 <- gr2015 + theme(panel.background = element_rect(fill = "white"), plot.background = element_rect(fill = "white"))
+gr2016 <- gr2016 + theme(panel.background = element_rect(fill = "white"), plot.background = element_rect(fill = "white"))
+gr2019 <- gr2019 + theme(panel.background = element_rect(fill = "white"), plot.background = element_rect(fill = "white"))
+gr2019 <- gr2019_11 + theme(panel.background = element_rect(fill = "white"), plot.background = element_rect(fill = "white"))
+
+
+ggsave("gr2008.png", gr2008, width = 10, height = 8, units = "in", bg = "white")
+ggsave("gr2011.png", gr2011, width = 10, height = 8, units = "in", bg = "white")
+ggsave("gr2015.png", gr2015, width = 10, height = 8, units = "in", bg = "white")
+ggsave("gr2016.png", gr2016, width = 10, height = 8, units = "in", bg = "white")
+ggsave("gr2019.png", gr2019, width = 10, height = 8, units = "in", bg = "white")
+ggsave("gr2019_11.png", gr2019_11, width = 10, height = 8, units = "in", bg = "white")
+
+
+library(magick)
+
+img_list <- c("gr2008.png", "gr2011.png", 
+              "gr2015.png", "gr2016.png", "gr2019.png", "gr2019_11.png")
+
+gif <- image_read(img_list) |> 
+       image_animate(fps = 0.25)
+
+gif
+
+```
+
+## CASO 12
+
+¿Cómo variaron los resultados electorales en municipios con una fuerte presencia de un determinado partido en las elecciones de 2008?
+
+```{r}
+#| code-fold: true
+
+municipio_mayor_dif_2008 <- codigo_municipio |> 
+  filter(year(fecha)==2008) |> 
+  distinct(municipio) |> 
+  pull(municipio)
+
+datos_mayor_dif_años <- datos_limpios |> 
+  left_join(cod_mun, by="cod_mun") |> 
+  relocate(municipio, .before = cod_mun) |> 
+  filter(municipio %in% municipio_mayor_dif_2008) |> 
+  group_by(fecha, municipio) |> 
+  mutate(ganador= n_votado(siglas, votos),
+         segundo = n_votado(siglas, votos, n = 2)) |> 
+  ungroup() |> 
+  distinct(fecha, municipio, .keep_all=TRUE) |> 
+  select(fecha,municipio, ganador, segundo)
+
+datos_mayor_dif_años |> 
+  filter(municipio=="Cañada Rosal")
+
+```
+
+## 
+
+```{r}
+#| code-fold: true
+
+datos_mayor_dif_años |>
+  filter(municipio=="Luisiana, La")
+
+datos_mayor_dif_años |> 
+  filter(municipio=="Aznalcóllar")
+
+```
+
+## 
+
+```{r}
+#| code-fold: true
+
+datos_mayor_dif_años |> 
+  filter(municipio== "Brenes")
+
+datos_mayor_dif_años |> 
+  filter(municipio== "Alosno" )
+
+```
+
+## 
+
+```{r}
+#| code-fold: true
+
+datos_mayor_dif_años |> 
+  filter(municipio=="Markina-Xemein") #CAMBIO
+
+datos_mayor_dif_años |> 
+  filter(municipio=="Paterna de Rivera" )
+
+```
+
+## 
+
+```{r}
+#| code-fold: true
+
+datos_mayor_dif_años |> 
+  filter(municipio=="San Bartolomé de la Torre")
+
+datos_mayor_dif_años |> 
+  filter(municipio=="Montellano" )
+
+
+```
+
+## Resumen
+
+En los municipios con mayor diferencia entre el primero y el segundo, ha ganado en todos el PSOE en todas las elecciones salvo MARKINA-XEMEIN que siempre ganó el PNV menos en las elecciones de 2011 que ganó OTROS.
+
+## CASO 13
+
+¿Cómo ha sido la abtención?,¿Cambiará esta cifra en zonas rurales?
+
+```{r}
+
+datos_abst <- datos_limpios |> 
+  mutate(abstencion= censo - sum(votos)- votos_blancos-votos_nulos, 
+         .by = c(cod_mun, fecha)) |> 
+  distinct(cod_mun,fecha, .keep_all = TRUE) |> 
+  mutate(porc_abst= abstencion*100/censo , .by = c(cod_mun, fecha)) |> 
+  group_by(ciudad=(censo>10000), fecha) |> 
+  summarise(media_abste=mean(porc_abst))
+
+```
+
+## 
+
+```{r}
+#| echo: false
+#| fig-cap: "La abstención es ligeramente superior en las ciudades que en las zonas rurales"
+
+ggplot(datos_abst, aes(x = fecha, y = media_abste, color = factor(ciudad))) +
+  geom_line() +
+  labs(title = "Tasa Media de Abstención por Fecha y Tamaño de Ciudad",
+       x = "Año",
+       y = "Media de Tasa de Abstención (%)",
+       color = "Tamaño de Ciudad") +
+  scale_color_discrete(labels = c("Menos de 10,000 habitantes", "Más de 10,000 habitantes")) 
+
+```
+
+## CASO 14
+
+```{r}
+#| echo: false
+#| fig-cap: "Evolución de los partidos nacionalistas: CIU a lo largo de los años pierde votos igual que el BNG, mientras que ERC gana fuerzas"
+
+ggplot(votos_partido |> filter(siglas %in% c("EAJPNV","ERC","BNG", "MÉSCOMPROM", "EHBILDU", "CIU")), 
+         aes(x = siglas, y = prop_voto)) +
+  geom_col(aes(fill = siglas)) +
+  scale_fill_manual(values = c("#74b4dc","#0056a3", "#067c29","#08ccb4",
+                               "#ffbf41", "#d6502a")) +
+  theme(axis.text.x = element_blank()) +
+  scale_y_continuous(labels = scales::label_number(suffix = "%")) +
+  transition_time(fecha) +
+  ease_aes("linear") +
+  labs(x = "Partido", 
+       y = "Votos", 
+       title = 'Votos por Fecha: {frame_time}')
+
+```
